@@ -8,14 +8,14 @@ import streamlit as st
 # 1. 스트림릿 페이지 기본 설정
 # ==========================================
 st.set_page_config(
-    page_title="대한민국 고령화 및 학령인구 지도",
-    page_icon="🗺️",
+    page_title="대한민국 학령인구 지도",
+    page_icon="🎒",
     layout="wide",
 )
 
-st.title("🗺️ 대한민국 시군구별 고령화 및 학령인구 지도")
+st.title("🎒 대한민국 시군구별 학령인구(중·고등학생) 지도")
 st.write(
-    "전국 읍·면·동 인구 데이터를 바탕으로 시군구별 65세 이상 인구 비율과 **중3(만 14세)·고1(만 15세)** 인구 현황을 비교 분석합니다."
+    "전국 읍·면·동 인구 데이터를 바탕으로 시군구별 **중학교(1~3학년)** 및 **고등학교(1~3학년)** 인구 현황과 **중3 vs 고1** 비교 분석을 제공합니다."
 )
 
 
@@ -57,23 +57,27 @@ df_latest["sigungu_code"] = df_latest["코드"].str.slice(0, 5)
 # 3-3. 나이별 인구 합산 함수
 def get_age_columns(min_age, max_age=100):
     cols = []
-    for age in range(min_age, max_age):
+    for age in range(min_age, max_age + 1):
         cols.append(f"계_{age}세")
-    if max_age >= 100:
-        cols.append("계_100세 이상")
     return [c for c in cols if c in df_latest.columns]
 
 
-# 전체 인구 및 65세 이상 인구 계산
+# 전체 인구 계산
 all_age_cols = [c for c in df_latest.columns if c.startswith("계_") and ("세" in c)]
 df_latest["총인구"] = df_latest[all_age_cols].sum(axis=1)
 
-old_age_cols = get_age_columns(65, 100)
-df_latest["65세이상_인구"] = df_latest[old_age_cols].sum(axis=1)
+# 학령인구 정의 (한국 나이 기준 대략 매칭되는 만 나이 구간)
+# 중학교 1~3학년: 만 12세 ~ 14세 ('계_12세' ~ '계_14세')
+middle_school_cols = get_age_columns(12, 14)
+df_latest["중학생_인구"] = df_latest[middle_school_cols].sum(axis=1)
 
-# 학령인구 정의: 중3 = 만 14세 ('계_14세'), 고1 = 만 15세 ('계_15세')
-middle_school_col = "계_14세" if "계_14세" in df_latest.columns else None
-high_school_col = "계_15세" if "계_15세" in df_latest.columns else None
+# 고등학교 1~3학년: 만 15세 ~ 17세 ('계_15세' ~ '계_17세')
+high_school_cols = get_age_columns(15, 17)
+df_latest["고등학생_인구"] = df_latest[high_school_cols].sum(axis=1)
+
+# 개별 학년 (중3 = 만 14세, 고1 = 만 15세)
+df_latest["중3_인구"] = df_latest["계_14세"] if "계_14세" in df_latest.columns else 0
+df_latest["고1_인구"] = df_latest["계_15세"] if "계_15세" in df_latest.columns else 0
 
 
 # 3-4. GeoJSON 파일에서 시군구 코드와 이름(시도, 시군구) 매핑 정보 추출
@@ -88,11 +92,13 @@ for feature in geojson["features"]:
 
 
 # 3-5. 시군구 코드별로 데이터 집계 (합산)
-agg_dict = {"총인구": "sum", "65세이상_인구": "sum"}
-if middle_school_col and middle_school_col in df_latest.columns:
-    agg_dict[middle_school_col] = "sum"
-if high_school_col and high_school_col in df_latest.columns:
-    agg_dict[high_school_col] = "sum"
+agg_dict = {
+    "총인구": "sum",
+    "중학생_인구": "sum",
+    "고등학생_인구": "sum",
+    "중3_인구": "sum",
+    "고1_인구": "sum",
+}
 
 df_sigungu = df_latest.groupby("sigungu_code").agg(agg_dict).reset_index()
 
@@ -105,73 +111,60 @@ df_sigungu["시군구명"] = df_sigungu["sigungu_code"].map(
 )
 
 
-# 3-6. 비율 계산 (고령화 비율, 중3 비율, 고1 비율 및 차이)
-df_sigungu["고령화비율"] = (df_sigungu["65세이상_인구"] / df_sigungu["총인구"]) * 100
+# 3-6. 비율 및 차이 계산
+df_sigungu["중학생_비율"] = (df_sigungu["중학생_인구"] / df_sigungu["총인구"]) * 100
+df_sigungu["고등학생_비율"] = (df_sigungu["고등학생_인구"] / df_sigungu["총인구"]) * 100
 
-if middle_school_col and middle_school_col in df_sigungu.columns:
-    df_sigungu["중3인원비율"] = (df_sigungu[middle_school_col] / df_sigungu["총인구"]) * 100
-    df_sigungu["중3인원"] = df_sigungu[middle_school_col]
-else:
-    df_sigungu["중3인원비율"] = 0.0
-    df_sigungu["중3인원"] = 0
-
-if high_school_col and high_school_col in df_sigungu.columns:
-    df_sigungu["고1인원비율"] = (df_sigungu[high_school_col] / df_sigungu["총인구"]) * 100
-    df_sigungu["고1인원"] = df_sigungu[high_school_col]
-else:
-    df_sigungu["고1인원비율"] = 0.0
-    df_sigungu["고1인원"] = 0
-
-# 중3과 고1 인원 및 비율 차이 계산 (고1 - 중3)
-df_sigungu["학령인구차이(고1-중3)"] = df_sigungu["고1인원"] - df_sigungu["중3인원"]
-df_sigungu["학령인구비율차이(고1-중3)"] = df_sigungu["고1인원비율"] - df_sigungu["중3인원비율"]
+# 중3 vs 고1 인원 및 차이 (고1 - 중3)
+df_sigungu["중고령_차이(고1-중3)"] = df_sigungu["고1_인구"] - df_sigungu["중3_인구"]
 
 
 # ==========================================
-# 4. 5단계 구간 분류 설정 (고령화 비율 기준)
+# 4. 지도 색상 단계를 위한 구간 분류 (중학생 비율 기준)
 # ==========================================
-# 경계값: 19% · 23% · 28% · 38%
-bins = [-float("inf"), 19.0, 23.0, 28.0, 38.0, float("inf")]
-labels = ["19% 미만", "19%~23%", "23%~28%", "28%~38%", "38% 이상"]
-df_sigungu["고령화구간"] = pd.cut(df_sigungu["고령화비율"], bins=bins, labels=labels)
+bins = [-float("inf"), 3.0, 5.0, 7.0, 10.0, float("inf")]
+labels = ["3% 미만", "3%~5%", "5%~7%", "7%~10%", "10% 이상"]
+df_sigungu["중학생비율구간"] = pd.cut(df_sigungu["중학생_비율"], bins=bins, labels=labels)
 
 
 # ==========================================
 # 5. Plotly 지도 시각화 (단계구분도)
 # ==========================================
-st.subheader(f"📍 대한민국 시군구별 고령화 지도 ({latest_year}년 기준)")
+st.subheader(f"📍 대한민국 시군구별 중학생 인구 비율 지도 ({latest_year}년 기준)")
 
 fig = px.choropleth(
     df_sigungu,
     geojson=geojson,
     locations="sigungu_code",  # 고유 '코드'로 지역 매칭
     featureidkey="properties.코드",  # GeoJSON 내부의 코드 속성
-    color="고령화구간",
+    color="중학생비율구간",
     color_discrete_map={
-        "19% 미만": "#deebf7",
-        "19%~23%": "#9ecae1",
-        "23%~28%": "#4292c6",
-        "28%~38%": "#08519c",
-        "38% 이상": "#08306b",
+        "3% 미만": "#edf8fb",
+        "3%~5%": "#b2e2e2",
+        "5%~7%": "#66c2a4",
+        "7%~10%": "#2ca25f",
+        "10% 이상": "#006d2c",
     },
     category_orders={
-        "고령화구간": ["19% 미만", "19%~23%", "23%~28%", "28%~38%", "38% 이상"]
+        "중학생비율구간": ["3% 미만", "3%~5%", "5%~7%", "7%~10%", "10% 이상"]
     },
     hover_name="시군구명",
     hover_data={
         "시도": True,
-        "고령화비율": ":.2f",
-        "중3인원비율": ":.2f",
-        "고1인원비율": ":.2f",
+        "중학생_비율": ":.2f",
+        "고등학생_비율": ":.2f",
+        "중3_인구": True,
+        "고1_인구": True,
         "sigungu_code": False,
-        "고령화구간": False,
+        "중학생비율구간": False,
     },
     labels={
-        "고령화구간": "고령화 비율 구간",
+        "중학생비율구간": "중학생 비율 구간",
         "시도": "시도",
-        "고령화비율": "고령화 비율(%)",
-        "중3인원비율": "중3 인원 비율(%)",
-        "고1인원비율": "고1 인원 비율(%)",
+        "중학생_비율": "중학생 비율(%)",
+        "고등학생_비율": "고등학생 비율(%)",
+        "중3_인구": "중3 인원(명)",
+        "고1_인구": "고1 인원(명)",
     },
 )
 
@@ -179,58 +172,53 @@ fig = px.choropleth(
 fig.update_geos(fitbounds="locations", visible=False)
 fig.update_layout(
     margin={"r": 0, "t": 0, "l": 0, "b": 0},
-    legend_title_text="고령화 비율 단계",
+    legend_title_text="중학생 비율 단계",
     height=650,
 )
 
-st.info("💡 **안내:** 마우스를 시군구 위에 올리면 **시군구 이름, 시도, 중3 인원(%), 고1 인원(%)**이 표시됩니다.")
+st.info("💡 **안내:** 마우스를 시군구 위에 올리면 **시군구 이름, 시도, 중학생/고등학생 비율, 중3 및 고1 인원 수**가 표시됩니다.")
 st.plotly_chart(fig, use_container_width=True)
 
 
 # ==========================================
-# 6. 지도 아래 순위 표 2개 (중3 기준 상위 10개 / 하위 10개)
+# 6. 지도 아래 순위 표 (중3 vs 고1 비교 중심)
 # ==========================================
 st.markdown("---")
-st.subheader("📊 중학교 3학년 vs 고등학교 1학년 학령인구 비교 표")
-st.write("중학교 3학년(만 14세) 인원 비율이 높은 곳과 낮은 곳의 **고1(만 15세)과의 차이**를 함께 비교합니다.")
+st.subheader("📊 중학교 3학년 vs 고등학교 1학년 인원 비교 Top 10 / Bottom 10")
+st.write("중3(만 14세) 인원과 고1(만 15세) 인원을 비교하여 학령인구 증감 추세를 살펴봅니다.")
 
-df_sorted = df_sigungu.sort_values(by="중3인원비율", ascending=False).reset_index(drop=True)
+df_sorted = df_sigungu.sort_values(by="중3_인구", ascending=False).reset_index(drop=True)
 
 col_top, col_bottom = st.columns(2)
 
 with col_top:
-    st.markdown("#### 🔴 중3 인원 비율 높은 곳 Top 10")
-    top_10 = df_sorted.head(10)[["시도", "시군구명", "중3인원비율", "고1인원비율", "학령인구비율차이(고1-중3)", "총인구"]].copy()
-    top_10.columns = ["시도", "시군구", "중3 비율(%)", "고1 비율(%)", "비율 차이(고1-중3)", "총인구"]
-    top_10["중3 비율(%)"] = top_10["중3 비율(%)"].round(2)
-    top_10["고1 비율(%)"] = top_10["고1 비율(%)"].round(2)
-    top_10["비율 차이(고1-중3)"] = top_10["비율 차이(고1-중3)"].round(2)
+    st.markdown("#### 🔴 중3 인원 많은 곳 Top 10")
+    top_10 = df_sorted.head(10)[["시도", "시군구명", "중3_인구", "고1_인구", "중고령_차이(고1-중3)", "총인구"]].copy()
+    top_10.columns = ["시도", "시군구", "중3 인원", "고1 인원", "증감(고1-중3)", "총인구"]
     st.dataframe(top_10, use_container_width=True, hide_index=True)
 
 with col_bottom:
-    st.markdown("#### 🔵 중3 인원 비율 낮은 곳 Top 10")
-    bottom_10 = df_sorted.tail(10).sort_values(by="중3인원비율", ascending=True)[
-        ["시도", "시군구명", "중3인원비율", "고1인원비율", "학령인구비율차이(고1-중3)", "총인구"]
+    st.markdown("#### 🔵 중3 인원 적은 곳 Bottom 10")
+    bottom_10 = df_sorted.tail(10).sort_values(by="중3_인구", ascending=True)[
+        ["시도", "시군구명", "중3_인구", "고1_인구", "중고령_차이(고1-중3)", "총인구"]
     ].copy()
-    bottom_10.columns = ["시도", "시군구", "중3 비율(%)", "고1 비율(%)", "비율 차이(고1-중3)", "총인구"]
-    bottom_10["중3 비율(%)"] = bottom_10["중3 비율(%)"].round(2)
-    bottom_10["고1 비율(%)"] = bottom_10["고1 비율(%)"].round(2)
-    bottom_10["비율 차이(고1-중3)"] = bottom_10["비율 차이(고1-중3)"].round(2)
+    bottom_10.columns = ["시도", "시군구", "중3 인원", "고1 인원", "증감(고1-중3)", "총인구"]
     st.dataframe(bottom_10, use_container_width=True, hide_index=True)
 
 
 # ==========================================
-# 7. 전국 전체 학령인구 요약 비교 섹션
+# 7. 전국 학령인구 요약 비교 메트릭
 # ==========================================
 st.markdown("---")
-st.subheader("📈 전국 시군구 평균 학령인구(중3 vs 고1) 요약")
+st.subheader("📈 전국 중·고등학생 및 중3 vs 고1 총괄 요약")
 
-total_middle = df_sigungu["중3인원"].sum()
-total_high = df_sigungu["고1인원"].sum()
-total_pop = df_sigungu["총인구"].sum()
+total_middle_school = df_sigungu["중학생_인구"].sum()
+total_high_school = df_sigungu["고등학생_인구"].sum()
+total_m3 = df_sigungu["중3_인구"].sum()
+total_h1 = df_sigungu["고1_인구"].sum()
 
-m_col1, m_col2, m_col3 = st.columns(3)
-m_col1.metric("전국 총 중3 인원 (만 14세)", f"{int(total_middle):,} 명", f"전체 인구 대비 {(total_middle/total_pop)*100:.2f}%")
-m_col2.metric("전국 총 고1 인원 (만 15세)", f"{int(total_high):,} 명", f"전체 인구 대비 {(total_high/total_pop)*100:.2f}%", delta_color="off")
-diff_total = total_high - total_middle
-m_col3.metric("고1 - 중3 인원 증감", f"{int(diff_total):,} 명", f"{'증가' if diff_total >= 0 else '감소'} 추세")
+m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+m_col1.metric("전국 중학생 (1~3학년)", f"{int(total_middle_school):,} 명")
+m_col2.metric("전국 고등학생 (1~3학년)", f"{int(total_high_school):,} 명")
+m_col3.metric("전국 중3 인원", f"{int(total_m3):,} 명")
+m_col4.metric("전국 고1 인원", f"{int(total_h1):,} 명", f"{int(total_h1 - total_m3):,} 명")
